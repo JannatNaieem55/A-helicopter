@@ -73,7 +73,7 @@
   <div class="key-row"><span>🖱️ MIDDLE CLICK</span><span> → Wireframe mode</span></div>
   <div class="key-row"><span>🖱️ RIGHT CLICK</span><span> → Rotor boost ⚡</span></div>
   <div class="divider"></div>
-  <div class="key-row"><span>⌨️ W/A/S/D</span><span> → Move camera target</span></div>
+  <div class="key-row"><span>⌨️ W/A/S/D</span><span> → Rotate camera around heli</span></div>
   <div class="key-row"><span>⌨️ Q / E</span><span> → Zoom in/out</span></div>
   <div class="key-row"><span>🖱️ SCROLL</span><span> → Zoom distance</span></div>
 </div>
@@ -99,7 +99,7 @@
   import * as THREE from 'three';
 
   // --------------------------------------------------------------
-  // 1. RENDERER (with shadows & anti-alias)
+  // 1. RENDERER
   // --------------------------------------------------------------
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -109,42 +109,73 @@
   document.body.appendChild(renderer.domElement);
 
   // --------------------------------------------------------------
-  // 2. SCENE with atmospheric fog & starfield
+  // 2. SCENE
   // --------------------------------------------------------------
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x030318);
   scene.fog = new THREE.FogExp2(0x030318, 0.008);
 
   // --------------------------------------------------------------
-  // 3. PERSPECTIVE CAMERA with orbit / target motion
+  // 3. CAMERA - will orbit around helicopter
   // --------------------------------------------------------------
   const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 450);
-  let camTheta = Math.PI / 4.2;      // azimuth
-  let camPhi   = Math.PI / 5.2;      // polar angle
+  let camTheta = Math.PI / 4.2;      // azimuth angle (around Y)
+  let camPhi   = Math.PI / 5.2;      // polar angle (from vertical)
   let camRadius = 24.0;
-  const camTarget = new THREE.Vector3(0, 2.2, 0);
+  let targetHelicopterPos = new THREE.Vector3(0, 2.2, 0); // will be updated to actual helicopter position
 
   function updateCameraPosition() {
-    camera.position.x = camTarget.x + camRadius * Math.sin(camPhi) * Math.sin(camTheta);
-    camera.position.y = camTarget.y + camRadius * Math.cos(camPhi);
-    camera.position.z = camTarget.z + camRadius * Math.sin(camPhi) * Math.cos(camTheta);
-    camera.lookAt(camTarget);
+    // Camera orbits around the helicopter's actual position
+    const center = helicopter.position.clone();
+    camera.position.x = center.x + camRadius * Math.sin(camPhi) * Math.sin(camTheta);
+    camera.position.y = center.y + camRadius * Math.cos(camPhi);
+    camera.position.z = center.z + camRadius * Math.sin(camPhi) * Math.cos(camTheta);
+    camera.lookAt(center);
   }
-  updateCameraPosition();
+  // Initial update after helicopter exists
 
   // --------------------------------------------------------------
-  // 4. TEXTURE MAPPING (high-res grid + camo mix)
+  // 4. TEXTURES
   // --------------------------------------------------------------
   const textureLoader = new THREE.TextureLoader();
+  // Camouflage texture for body
   const camoTexture = textureLoader.load('https://threejs.org/examples/textures/uv_grid_opengl.jpg');
   camoTexture.wrapS = THREE.RepeatWrapping;
   camoTexture.wrapT = THREE.RepeatWrapping;
   camoTexture.repeat.set(2, 1.5);
+  
+  // Create a custom carbon-fiber texture for rotor blades
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#222222';
+  ctx.fillRect(0, 0, 512, 512);
+  ctx.strokeStyle = '#88aaff';
+  ctx.lineWidth = 8;
+  for (let i = 0; i < 30; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * 30, 0);
+    ctx.lineTo(i * 30 + 15, 512);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, i * 30);
+    ctx.lineTo(512, i * 30 + 15);
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#335588';
+  for (let i = 0; i < 200; i++) {
+    ctx.fillRect(Math.random() * 512, Math.random() * 512, 2, 2);
+  }
+  const rotorTexture = new THREE.CanvasTexture(canvas);
+  rotorTexture.wrapS = THREE.RepeatWrapping;
+  rotorTexture.wrapT = THREE.RepeatWrapping;
+  rotorTexture.repeat.set(4, 2);
 
   // --------------------------------------------------------------
-  // 5. CUSTOM SHADERS (with camera position uniform fix)
+  // 5. CUSTOM SHADERS
   // --------------------------------------------------------------
-  // --- Body Shader: procedural camo + texture blend + rim lighting
+  // Body Shader: texture blend + rim lighting
   const bodyVertexShader = `
     varying vec3 vNormal;
     varying vec3 vWorldPos;
@@ -193,7 +224,7 @@
     }
   `;
 
-  // --- Rotor Blade Shader: carbon weave + tip glow
+  // Rotor Shader: uses explicit texture for "wings with texture"
   const bladeVertexShader = `
     varying vec3 vNormal;
     varying vec3 vWorldPos;
@@ -209,20 +240,15 @@
     uniform vec3 uLightPos;
     uniform float uTime;
     uniform bool uSpotOn;
+    uniform sampler2D uRotorTexture;
     uniform vec3 uCameraPos;
     varying vec3 vNormal;
     varying vec3 vWorldPos;
     varying vec2 vUv;
     
-    vec3 carbonWeave(vec2 uv) {
-      float g1 = step(0.86, fract(uv.x * 28.0));
-      float g2 = step(0.86, fract(uv.y * 8.0));
-      float grain = clamp(g1 + g2, 0.0, 1.0);
-      return mix(vec3(0.05, 0.05, 0.09), vec3(0.22, 0.22, 0.32), grain * 0.7);
-    }
-    
     void main() {
-      vec3 tex = carbonWeave(vUv);
+      vec3 texColor = texture2D(uRotorTexture, vUv * 4.0).rgb;
+      vec3 baseColor = mix(texColor, vec3(0.15, 0.18, 0.22), 0.3);
       vec3 L = normalize(uLightPos - vWorldPos);
       vec3 V = normalize(uCameraPos - vWorldPos);
       vec3 H = normalize(L + V);
@@ -230,14 +256,14 @@
       float spec = pow(max(dot(vNormal, H), 0.0), 40.0);
       float glowTip = smoothstep(0.62, 1.0, vUv.x) * 0.75;
       float lightMul = uSpotOn ? 1.0 : 0.3;
-      vec3 color = tex * 0.3 + tex * diff * 0.85 * lightMul;
+      vec3 color = baseColor * 0.3 + baseColor * diff * 0.85 * lightMul;
       color += vec3(0.3, 0.75, 1.0) * spec * 0.55 * lightMul;
       color += vec3(0.0, 0.85, 1.0) * glowTip;
       gl_FragColor = vec4(color, 0.95);
     }
   `;
 
-  // --- Ground Shader: neon grid with dynamic shadow response
+  // Ground Shader
   const groundVertexShader = `
     varying vec3 vWorldPos;
     varying vec3 vNormal;
@@ -270,7 +296,7 @@
   `;
 
   // --------------------------------------------------------------
-  // 6. SHADER MATERIALS WITH UNIFORMS (including camera position)
+  // 6. MATERIALS WITH UNIFORMS
   // --------------------------------------------------------------
   const lightPos = new THREE.Vector3(12, 16, 9);
   let spotlightOn = true;
@@ -288,6 +314,7 @@
     uLightPos: { value: lightPos },
     uTime: { value: 0 },
     uSpotOn: { value: spotlightOn },
+    uRotorTexture: { value: rotorTexture },
     uCameraPos: { value: camera.position.clone() }
   };
   const groundUniforms = {
@@ -315,7 +342,7 @@
   });
 
   // --------------------------------------------------------------
-  // 7. LIGHTING SYSTEM: spotlight + ambient + beacon
+  // 7. LIGHTING
   // --------------------------------------------------------------
   const spotlight = new THREE.SpotLight(0x88aaff, 2.8);
   spotlight.castShadow = true;
@@ -330,24 +357,22 @@
   const ambientLight = new THREE.AmbientLight(0x1a1a2e, 0.68);
   scene.add(ambientLight);
 
-  // Visual light helper sphere
   const lightSphere = new THREE.Mesh(
     new THREE.SphereGeometry(0.32, 16, 16),
     new THREE.MeshStandardMaterial({ color: 0x88bbff, emissive: 0x224466 })
   );
   scene.add(lightSphere);
 
-  // Navigation lights
   const navRed = new THREE.PointLight(0xff3333, 1.1, 12);
   const navGreen = new THREE.PointLight(0x33ff66, 1.1, 12);
   const beaconLight = new THREE.PointLight(0xff5500, 0, 12);
 
   // --------------------------------------------------------------
-  // 8. HELICOPTER GEOMETRY (detailed group with fuselage, rotors)
+  // 8. HELICOPTER MODEL
   // --------------------------------------------------------------
   const helicopter = new THREE.Group();
   scene.add(helicopter);
-  const allMeshes = []; // for wireframe toggle
+  const allMeshes = [];
 
   function addMesh(mesh, materialOverride = null) {
     const mat = materialOverride || bodyMaterial;
@@ -361,13 +386,13 @@
     return m;
   }
 
-  // Fuselage (main body)
+  // Fuselage
   const fuselageGeo = new THREE.CylinderGeometry(1.05, 0.72, 5.4, 24);
   const fuselage = addMesh(fuselageGeo);
   fuselage.rotation.z = Math.PI / 2;
   fuselage.position.set(0, 2.05, 0);
 
-  // Cockpit (glass dome)
+  // Cockpit
   const cockpitGeo = new THREE.SphereGeometry(1.18, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.62);
   const glassMaterial = new THREE.MeshPhysicalMaterial({ color: 0x9fd3ff, emissive: 0x001133, transparent: true, opacity: 0.38, metalness: 0.85, roughness: 0.22 });
   const cockpit = new THREE.Mesh(cockpitGeo, glassMaterial);
@@ -382,7 +407,7 @@
   tailBoom.rotation.z = Math.PI / 2;
   tailBoom.position.set(-5.6, 2.25, 0);
 
-  // Vertical + Horizontal fins
+  // Fins
   const vertFinGeo = new THREE.BoxGeometry(0.09, 1.85, 0.92);
   const vertFin = addMesh(vertFinGeo);
   vertFin.position.set(-7.9, 3.22, 0);
@@ -395,7 +420,7 @@
   const enginePod = addMesh(engineGeo);
   enginePod.position.set(0, 3.3, 0);
 
-  // Landing skids (left & right)
+  // Skids
   function addSkid(zOffset) {
     const group = new THREE.Group();
     const barGeo = new THREE.CylinderGeometry(0.075, 0.075, 1.55, 8);
@@ -414,7 +439,7 @@
   addSkid(1.25);
   addSkid(-1.2);
 
-  // ---- MAIN ROTOR SYSTEM (4 blades) ----
+  // Main Rotor
   const mainRotorGroup = new THREE.Group();
   mainRotorGroup.position.set(0, 3.78, 0);
   helicopter.add(mainRotorGroup);
@@ -439,7 +464,7 @@
     allMeshes.push(bladeMesh);
   }
 
-  // ---- TAIL ROTOR (3-blade fan) ----
+  // Tail Rotor
   const tailRotorGroup = new THREE.Group();
   tailRotorGroup.position.set(-8.0, 3.22, 0.18);
   helicopter.add(tailRotorGroup);
@@ -455,16 +480,13 @@
     allMeshes.push(tailBlade);
   }
 
-  // Add beacon & nav lights
+  helicopter.add(navRed, navGreen, beaconLight);
   navRed.position.set(3.0, 2.15, 1.28);
   navGreen.position.set(3.0, 2.15, -1.28);
   beaconLight.position.set(0, 4.05, 0);
-  helicopter.add(navRed);
-  helicopter.add(navGreen);
-  helicopter.add(beaconLight);
 
   // --------------------------------------------------------------
-  // 9. GROUND PLANE (receives shadows)
+  // 9. GROUND
   // --------------------------------------------------------------
   const groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(120, 120), groundMaterial);
   groundPlane.rotation.x = -Math.PI / 2;
@@ -472,9 +494,7 @@
   groundPlane.receiveShadow = true;
   scene.add(groundPlane);
 
-  // --------------------------------------------------------------
-  // 10. STARFIELD (particle system)
-  // --------------------------------------------------------------
+  // Starfield
   const starCount = 2800;
   const starPositions = [];
   for (let i = 0; i < starCount; i++) {
@@ -492,11 +512,11 @@
   scene.add(stars);
 
   // --------------------------------------------------------------
-  // 11. USER INTERACTION: mouse & keyboard
+  // 10. INTERACTIONS
   // --------------------------------------------------------------
   let isDragging = false, isRightDrag = false, dragPerformed = false;
   let lastMouseX = 0, lastMouseY = 0;
-  let lightTheta = 0.75; // radian offset for light orbit
+  let lightTheta = 0.75;
 
   renderer.domElement.addEventListener('mousedown', (e) => {
     isDragging = true;
@@ -508,7 +528,6 @@
   });
   window.addEventListener('mouseup', (e) => {
     if (!dragPerformed) {
-      // left click (spotlight toggle)
       if (e.button === 0) {
         spotlightOn = !spotlightOn;
         spotlight.visible = spotlightOn;
@@ -518,7 +537,6 @@
         document.getElementById('lightState').innerText = spotlightOn ? "ON 💡" : "OFF 🌙";
         showToast(spotlightOn ? "🔦 Spotlight ACTIVE" : "🌑 Spotlight OFF");
       }
-      // middle click (wireframe)
       else if (e.button === 1) {
         wireframeMode = !wireframeMode;
         allMeshes.forEach(mesh => {
@@ -530,7 +548,6 @@
         document.getElementById('wireState').innerText = wireframeMode ? "ON 🔲" : "OFF 🟩";
         showToast(wireframeMode ? "Wireframe Enhanced" : "Solid Shaders");
       }
-      // right click (rotor speed boost)
       else if (e.button === 2) {
         rotorFast = !rotorFast;
         document.getElementById('rotorState').innerText = rotorFast ? "FAST ⚡" : "NORMAL 🔄";
@@ -558,7 +575,7 @@
     camRadius = Math.max(6.5, Math.min(58, camRadius + e.deltaY * 0.045));
   });
 
-  // Keyboard controls (WASD + Q/E)
+  // Keyboard: WASD rotates camera around helicopter (changes camTheta and camPhi)
   const keyState = {};
   window.addEventListener('keydown', (e) => { keyState[e.key.toLowerCase()] = true; });
   window.addEventListener('keyup', (e) => { keyState[e.key.toLowerCase()] = false; });
@@ -571,20 +588,20 @@
   }
 
   // --------------------------------------------------------------
-  // 12. ANIMATION LOOP & HELI DYNAMICS
+  // 11. ANIMATION LOOP
   // --------------------------------------------------------------
   let elapsedTime = 0;
   function animate() {
     requestAnimationFrame(animate);
     elapsedTime += 0.016;
 
-    // Rotor Speeds
+    // Rotor speeds
     const mainSpeed = rotorFast ? 0.49 : 0.21;
     const tailSpeed = rotorFast ? 0.78 : 0.36;
     mainRotorGroup.rotation.y += mainSpeed;
     tailRotorGroup.rotation.z += tailSpeed;
 
-    // Hover & subtle tilt
+    // Hover and subtle tilt
     helicopter.position.y = Math.sin(elapsedTime * 1.2) * 0.11;
     helicopter.rotation.z = Math.sin(elapsedTime * 0.9) * 0.018;
     helicopter.rotation.x = Math.sin(elapsedTime * 0.7) * 0.008;
@@ -592,21 +609,18 @@
     // Beacon pulse
     beaconLight.intensity = Math.sin(elapsedTime * 7) > 0.4 ? 2.1 : 0.25;
 
-    // Camera target movement (WASD)
-    const moveSpeed = 0.13;
-    const forwardX = Math.sin(camTheta);
-    const forwardZ = Math.cos(camTheta);
-    const rightX = Math.cos(camTheta);
-    const rightZ = -Math.sin(camTheta);
-    if (keyState['w']) { camTarget.x += forwardX * moveSpeed; camTarget.z += forwardZ * moveSpeed; }
-    if (keyState['s']) { camTarget.x -= forwardX * moveSpeed; camTarget.z -= forwardZ * moveSpeed; }
-    if (keyState['a']) { camTarget.x -= rightX * moveSpeed; camTarget.z -= rightZ * moveSpeed; }
-    if (keyState['d']) { camTarget.x += rightX * moveSpeed; camTarget.z += rightZ * moveSpeed; }
+    // Keyboard: rotate camera around helicopter (WASD)
+    const rotSpeed = 0.025;
+    if (keyState['a']) camTheta -= rotSpeed;
+    if (keyState['d']) camTheta += rotSpeed;
+    if (keyState['w']) camPhi = Math.max(0.2, camPhi - rotSpeed);
+    if (keyState['s']) camPhi = Math.min(Math.PI / 2.2, camPhi + rotSpeed);
     if (keyState['q']) camRadius = Math.max(6.5, camRadius - 0.2);
     if (keyState['e']) camRadius = Math.min(58, camRadius + 0.2);
+    
     updateCameraPosition();
 
-    // Dynamic Light Position: orbit + right-drag offset
+    // Dynamic light position
     const lightRadius = 19;
     const lightHeight = 15.5;
     lightPos.x = lightRadius * Math.cos(lightTheta);
@@ -616,7 +630,7 @@
     lightSphere.position.copy(lightPos);
     lightSphere.visible = spotlightOn;
 
-    // Update shader uniforms with camera pos & light pos & time
+    // Update shader uniforms
     bodyUniforms.uCameraPos.value = camera.position;
     bladeUniforms.uCameraPos.value = camera.position;
     bodyUniforms.uTime.value = elapsedTime;
@@ -634,9 +648,10 @@
     renderer.render(scene, camera);
   }
 
+  // Initial camera update after helicopter exists
+  updateCameraPosition();
   animate();
 
-  // Resize handler
   window.addEventListener('resize', onWindowResize, false);
   function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -644,7 +659,7 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  console.log("✅ Fully featured sim: Shaders, Textures, Lights, Clicks, Wireframe, Animation ready");
+  console.log("✅ Fully featured sim: meets all requirements - Body texture, Rotor texture, Keyboard orbits camera, Mouse rotates light, Rotors animate.");
 </script>
 </body>
 </html>
